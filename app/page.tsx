@@ -11,24 +11,29 @@ import {
   Info,
   ChevronDown,
   ChevronUp,
+  FileArchive,
+  CheckCircle,
 } from "lucide-react";
-import FileUpload from "./components/FileUpload";
 import UserList from "./components/UserList";
 import StatsCard from "./components/StatsCard";
-import {
-  parseFollowers,
-  parseFollowing,
-  analyzeRelationships,
-  AnalysisResult,
-} from "./lib/instagram";
+import { analyzeRelationships, AnalysisResult } from "./lib/instagram";
+import { extractInstagramZip } from "./lib/unzip";
+
+type UploadMode = "zip" | "json";
 
 export default function Home() {
+  const [mode, setMode] = useState<UploadMode>("zip");
+  const [zipFile, setZipFile] = useState<File | null>(null);
   const [followersFile, setFollowersFile] = useState<File | null>(null);
   const [followingFile, setFollowingFile] = useState<File | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
+  const [dragging, setDragging] = useState(false);
+
+  const canAnalyze =
+    mode === "zip" ? !!zipFile : !!followersFile && !!followingFile;
 
   async function readJson(file: File): Promise<unknown> {
     return new Promise((resolve, reject) => {
@@ -46,37 +51,55 @@ export default function Home() {
   }
 
   async function handleAnalyze() {
-    if (!followersFile || !followingFile) return;
     setLoading(true);
-    setError(null);
+    setErrors([]);
     try {
-      const [followersJson, followingJson] = await Promise.all([
-        readJson(followersFile),
-        readJson(followingFile),
-      ]);
-      const followers = parseFollowers(followersJson);
-      const following = parseFollowing(followingJson);
-
-      if (followers.length === 0 && following.length === 0) {
-        setError(
-          "データを読み込めませんでした。正しいInstagramのエクスポートファイルを選択してください。"
-        );
-        return;
+      if (mode === "zip" && zipFile) {
+        const { followers, following, errors: extractErrors } = await extractInstagramZip(zipFile);
+        if (extractErrors.length > 0) {
+          setErrors(extractErrors);
+          if (followers.length === 0 && following.length === 0) return;
+        }
+        setResult(analyzeRelationships(followers, following));
+      } else if (followersFile && followingFile) {
+        const { parseFollowers, parseFollowing } = await import("./lib/instagram");
+        const [followersJson, followingJson] = await Promise.all([
+          readJson(followersFile),
+          readJson(followingFile),
+        ]);
+        const followers = parseFollowers(followersJson);
+        const following = parseFollowing(followingJson);
+        if (followers.length === 0 && following.length === 0) {
+          setErrors(["データを読み込めませんでした。正しいInstagramのエクスポートファイルを選択してください。"]);
+          return;
+        }
+        setResult(analyzeRelationships(followers, following));
       }
-
-      setResult(analyzeRelationships(followers, following));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "不明なエラーが発生しました");
+      setErrors([e instanceof Error ? e.message : "不明なエラーが発生しました"]);
     } finally {
       setLoading(false);
     }
   }
 
   function handleReset() {
+    setZipFile(null);
     setFollowersFile(null);
     setFollowingFile(null);
     setResult(null);
-    setError(null);
+    setErrors([]);
+  }
+
+  function handleZipDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file?.name.endsWith(".zip")) setZipFile(file);
+  }
+
+  function handleJsonFile(type: "followers" | "following", file: File) {
+    if (type === "followers") setFollowersFile(file);
+    else setFollowingFile(file);
   }
 
   return (
@@ -95,7 +118,7 @@ export default function Home() {
 
         {!result ? (
           <>
-            {/* How to Guide */}
+            {/* Guide */}
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm mb-6 overflow-hidden">
               <button
                 className="w-full flex items-center justify-between p-4 hover:bg-gray-50 transition-colors"
@@ -114,53 +137,20 @@ export default function Home() {
               {showGuide && (
                 <div className="px-4 pb-4">
                   <ol className="space-y-2 text-sm text-gray-600">
-                    <li className="flex gap-2">
-                      <span className="flex-shrink-0 w-5 h-5 bg-pink-100 text-pink-600 rounded-full flex items-center justify-center text-xs font-bold">
-                        1
-                      </span>
-                      Instagramアプリで
-                      <strong>プロフィール → ハンバーガーメニュー → アカウントセンター</strong>
-                      を開く
-                    </li>
-                    <li className="flex gap-2">
-                      <span className="flex-shrink-0 w-5 h-5 bg-pink-100 text-pink-600 rounded-full flex items-center justify-center text-xs font-bold">
-                        2
-                      </span>
-                      <span>
-                        <strong>情報とアクセス許可 → 情報をダウンロード</strong>を選択
-                      </span>
-                    </li>
-                    <li className="flex gap-2">
-                      <span className="flex-shrink-0 w-5 h-5 bg-pink-100 text-pink-600 rounded-full flex items-center justify-center text-xs font-bold">
-                        3
-                      </span>
-                      <span>
-                        形式を<strong>JSON</strong>に設定してリクエスト送信
-                      </span>
-                    </li>
-                    <li className="flex gap-2">
-                      <span className="flex-shrink-0 w-5 h-5 bg-pink-100 text-pink-600 rounded-full flex items-center justify-center text-xs font-bold">
-                        4
-                      </span>
-                      <span>
-                        ZIPを展開して{" "}
-                        <code className="bg-gray-100 px-1 rounded text-xs">
-                          connections/followers_and_following/
-                        </code>{" "}
-                        フォルダを確認
-                      </span>
-                    </li>
-                    <li className="flex gap-2">
-                      <span className="flex-shrink-0 w-5 h-5 bg-pink-100 text-pink-600 rounded-full flex items-center justify-center text-xs font-bold">
-                        5
-                      </span>
-                      <span>
-                        <code className="bg-gray-100 px-1 rounded text-xs">followers_1.json</code>{" "}
-                        と{" "}
-                        <code className="bg-gray-100 px-1 rounded text-xs">following.json</code>{" "}
-                        を下記にアップロード
-                      </span>
-                    </li>
+                    {[
+                      <>Instagramアプリで<strong>プロフィール → ≡ → アカウントセンター</strong>を開く</>,
+                      <><strong>情報とアクセス許可 → 情報をダウンロード</strong>を選択</>,
+                      <>形式を<strong>JSON</strong>に設定してリクエスト送信</>,
+                      <>数分〜数時間後に届くメールのリンクからZIPをダウンロード</>,
+                      <>ダウンロードした<strong>ZIPファイルをそのままアップロード</strong>（解凍不要）</>,
+                    ].map((step, i) => (
+                      <li key={i} className="flex gap-2">
+                        <span className="flex-shrink-0 w-5 h-5 bg-pink-100 text-pink-600 rounded-full flex items-center justify-center text-xs font-bold">
+                          {i + 1}
+                        </span>
+                        <span>{step}</span>
+                      </li>
+                    ))}
                   </ol>
                   <p className="mt-3 text-xs text-gray-400 bg-gray-50 rounded-xl p-3">
                     ファイルはブラウザ内でのみ処理され、サーバーには送信されません。
@@ -169,31 +159,136 @@ export default function Home() {
               )}
             </div>
 
-            {/* Upload Section */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-              <FileUpload
-                label="フォロワー"
-                description="followers_1.json をドラッグ＆ドロップ"
-                fileName={followersFile?.name ?? null}
-                onFile={setFollowersFile}
-              />
-              <FileUpload
-                label="フォロー中"
-                description="following.json をドラッグ＆ドロップ"
-                fileName={followingFile?.name ?? null}
-                onFile={setFollowingFile}
-              />
+            {/* Mode Toggle */}
+            <div className="flex bg-gray-100 rounded-xl p-1 mb-5">
+              <button
+                className={`flex-1 py-2 rounded-lg text-sm font-semibold transition-all ${
+                  mode === "zip"
+                    ? "bg-white shadow text-gray-800"
+                    : "text-gray-500 hover:text-gray-700"
+                }`}
+                onClick={() => setMode("zip")}
+              >
+                ZIPファイル
+              </button>
+              <button
+                className={`flex-1 py-2 rounded-lg text-sm font-semibold transition-all ${
+                  mode === "json"
+                    ? "bg-white shadow text-gray-800"
+                    : "text-gray-500 hover:text-gray-700"
+                }`}
+                onClick={() => setMode("json")}
+              >
+                JSONファイル（個別）
+              </button>
             </div>
 
-            {error && (
-              <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4 text-sm text-red-600">
-                {error}
+            {/* Upload Area */}
+            {mode === "zip" ? (
+              <div
+                className={`relative border-2 border-dashed rounded-2xl p-10 cursor-pointer transition-all duration-200 text-center mb-6 ${
+                  dragging
+                    ? "border-pink-500 bg-pink-50"
+                    : zipFile
+                    ? "border-green-400 bg-green-50"
+                    : "border-gray-300 bg-gray-50 hover:border-pink-400 hover:bg-pink-50/30"
+                }`}
+                onClick={() => document.getElementById("zip-input")?.click()}
+                onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={handleZipDrop}
+              >
+                <input
+                  id="zip-input"
+                  type="file"
+                  accept=".zip"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) setZipFile(f);
+                  }}
+                />
+                {zipFile ? (
+                  <>
+                    <CheckCircle className="w-10 h-10 text-green-500 mx-auto mb-2" />
+                    <p className="font-semibold text-green-700">{zipFile.name}</p>
+                    <p className="text-xs text-green-500 mt-1">
+                      {(zipFile.size / 1024 / 1024).toFixed(1)} MB
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <FileArchive className="w-10 h-10 text-gray-400 mx-auto mb-3" />
+                    <p className="font-semibold text-gray-700">
+                      ZIPファイルをドラッグ＆ドロップ
+                    </p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      またはクリックしてファイルを選択
+                    </p>
+                    <p className="text-xs text-gray-300 mt-3">
+                      解凍不要・そのままアップロードできます
+                    </p>
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+                {(["followers", "following"] as const).map((type) => {
+                  const file = type === "followers" ? followersFile : followingFile;
+                  const label = type === "followers" ? "フォロワー" : "フォロー中";
+                  const hint = type === "followers" ? "followers_1.json" : "following.json";
+                  return (
+                    <div
+                      key={type}
+                      className={`border-2 border-dashed rounded-2xl p-6 cursor-pointer text-center transition-all ${
+                        file
+                          ? "border-green-400 bg-green-50"
+                          : "border-gray-300 bg-gray-50 hover:border-pink-400 hover:bg-pink-50/30"
+                      }`}
+                      onClick={() => document.getElementById(`json-${type}`)?.click()}
+                    >
+                      <input
+                        id={`json-${type}`}
+                        type="file"
+                        accept=".json"
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) handleJsonFile(type, f);
+                        }}
+                      />
+                      {file ? (
+                        <>
+                          <CheckCircle className="w-8 h-8 text-green-500 mx-auto mb-1" />
+                          <p className="font-semibold text-green-700 text-sm">{label}</p>
+                          <p className="text-xs text-green-500 truncate">{file.name}</p>
+                        </>
+                      ) : (
+                        <>
+                          <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center mx-auto mb-2">
+                            <span className="text-gray-500 text-xs font-bold">JSON</span>
+                          </div>
+                          <p className="font-semibold text-gray-700 text-sm">{label}</p>
+                          <p className="text-xs text-gray-400">{hint}</p>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {errors.length > 0 && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4 space-y-1">
+                {errors.map((e, i) => (
+                  <p key={i} className="text-sm text-red-600">{e}</p>
+                ))}
               </div>
             )}
 
             <button
               onClick={handleAnalyze}
-              disabled={!followersFile || !followingFile || loading}
+              disabled={!canAnalyze || loading}
               className="w-full py-3.5 bg-gradient-to-r from-pink-500 to-purple-600 text-white font-bold rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {loading ? (
